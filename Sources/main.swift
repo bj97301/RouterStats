@@ -146,7 +146,7 @@ struct History: Codable {
     // Average `series` into n time buckets covering the last `range` seconds. nil = no data; negative values are skipped.
     func buckets(_ series: [Double], n: Int, range: Double, now: Double = Date().timeIntervalSince1970) -> [Double?] {
         var sum = [Double](repeating: 0, count: n), cnt = [Int](repeating: 0, count: n)
-        let start = now - range
+        let start = gridEnd(now: now, range: range, n: n) - range
         var i = min(t.count, series.count) - 1
         while i >= 0 && t[i] >= start {
             if series[i] >= 0 { let b = min(n - 1, Int((t[i] - start) / range * Double(n))); sum[b] += series[i]; cnt[b] += 1 }
@@ -154,6 +154,11 @@ struct History: Codable {
         }
         return (0..<n).map { cnt[$0] > 0 ? sum[$0] / Double(cnt[$0]) : nil }
     }
+}
+
+/// Bucket boundaries snap to a fixed time grid so bars don't shift on every redraw (e.g. while the mouse moves).
+func gridEnd(now: Double = Date().timeIntervalSince1970, range: Double, n: Int) -> Double {
+    let w = range / Double(n); return ceil(now / w) * w
 }
 
 func drawSplit(down: [Double], up: [Double], in g: NSRect) {
@@ -382,7 +387,7 @@ final class Flyout: NSView {
         let i = max(0, min(n - 1, Int((x - g.minX) / (g.width / CGFloat(n)))))
         NSColor.white.withAlphaComponent(0.85).setFill()
         NSRect(x: x - 0.5, y: g.minY, width: 1, height: g.height + 6).fill()
-        let tAt = Date().timeIntervalSince1970 - range + (Double(i) + 0.5) / Double(n) * range
+        let tAt = gridEnd(range: range, n: n) - range + (Double(i) + 0.5) / Double(n) * range
         let f = DateFormatter(); f.dateFormat = "h:mm:ss a"
         var lines: [(NSColor?, String, String)] = [(nil, f.string(from: Date(timeIntervalSince1970: tAt)), "")]
         for s in ser { lines.append((s.1, s.0, s.2[i].map(s.3) ?? "–")) }
