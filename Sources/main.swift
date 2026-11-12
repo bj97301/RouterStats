@@ -299,7 +299,11 @@ final class Flyout: NSView {
     static let graphSize = NSSize(width: 391, height: 216)
     var section: Section = .cpu { didSet { needsDisplay = true } }
     var h = History(), s = Sample()
-    var rangeIdx = UserDefaults.standard.object(forKey: "range") as? Int ?? 1 { didSet { UserDefaults.standard.set(rangeIdx, forKey: "range"); needsDisplay = true } }
+    // Each section remembers its own time range (default 1 Hour).
+    var rangeIdx: Int {
+        get { min(UserDefaults.standard.object(forKey: "range.\(section)") as? Int ?? 1, ranges.count - 1) }
+        set { UserDefaults.standard.set(newValue, forKey: "range.\(section)"); needsDisplay = true }
+    }
     var hoverX: CGFloat? { didSet { needsDisplay = true } }
     var range: Double { ranges[rangeIdx].1 }
     var graph: NSRect { let r = bounds.insetBy(dx: 16, dy: 14); return NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height - 30) }
@@ -584,7 +588,7 @@ final class App: NSObject, NSApplicationDelegate {
                 self.flyoutView.section = sec; self.flyoutView.h = self.h; self.flyoutView.s = self.s
                 self.flyoutView.appearance = NSAppearance(named: .darkAqua)
                 self.flyoutView.setFrameSize(self.flyoutView.preferredSize())
-                self.flyoutView.rangeIdx = 0; self.flyoutView.hoverX = sec == .devices ? nil : 300
+                self.flyoutView.hoverX = sec == .devices ? nil : 300
                 save(self.flyoutView, "/tmp/rs-flyout-\(sec).png")
             }
             let sw = SetupWindow(existing: nil) { _, _ in }
