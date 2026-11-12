@@ -22,7 +22,7 @@ The menu bar shows a CPU history graph and a RAM pie. Click it for the full pane
 | **Ports** | Link speed of each Ethernet port |
 | **Uptime / Firmware** | Router uptime, firmware version, update notice |
 
-Hovering CPU, Cores, Memory, Internet, Ping or Devices opens a side panel with up to 24 hours of history. Pick the time range in its top-right corner, and hover the graph to see the time and values.
+Hovering CPU, Cores, Memory, Internet, Ping or Devices opens a side panel with up to 7 days of history. Pick the time range in its top-right corner, and hover the graph to see the time and values.
 
 The menu bar icon turns red if the router stops answering or the internet goes down. Right-click it for **Open Network Map**, **Settings…** and **Quit**.
 
@@ -73,7 +73,7 @@ RouterStats uses the router's own web API, the same `login.cgi` and `appGet.cgi`
 
 Ping runs from your Mac (`/sbin/ping`), so it doesn't add load to the router. Ping deviation is the change from one ping to the next, the same way the ASUS Game Dashboard calculates it.
 
-History is kept for 24 hours in `~/Library/Application Support/RouterStats/history.json` and only covers the time your Mac was awake with RouterStats running.
+History is kept for 7 days in `~/Library/Application Support/RouterStats/history.json`: full 2-second detail for the last 24 hours, then one averaged point per minute (about 2 MB for a full week). It only covers the time your Mac was awake with RouterStats running.
 
 ## Troubleshooting
 

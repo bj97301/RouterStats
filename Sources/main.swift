@@ -74,8 +74,10 @@ func signalColor(_ rssi: Int?) -> NSColor {
     return r >= -60 ? green : r >= -70 ? orange : .systemRed
 }
 
-// MARK: history (24 h, timestamped, saved to disk)
-let maxAge: Double = 86400
+// MARK: history (timestamped, saved to disk)
+// Full 2-second detail for the last day; older samples are averaged into 1-minute points and kept for a week.
+let rawAge: Double = 86400
+let maxAge: Double = 7 * 86400
 let historyURL: URL = {
     let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("RouterStats")
     try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
@@ -84,6 +86,7 @@ let historyURL: URL = {
 struct History: Codable {
     var t: [Double] = [], cpu: [Double] = [], mem: [Double] = [], down: [Double] = [], up: [Double] = [], cores: [[Double]] = []
     var temp: [Double] = [], ping: [Double] = [], dev: [Double] = [], devices: [Double] = []
+    var compacted = 0   // samples [0, compacted) are already 1-minute averages
 
     init() {}
     init(from d: Decoder) throws {   // tolerate files from older versions
@@ -93,19 +96,49 @@ struct History: Codable {
         cpu = get(.cpu); mem = get(.mem); down = get(.down); up = get(.up)
         temp = get(.temp); ping = get(.ping); dev = get(.dev); devices = get(.devices)
         cores = (try? c.decode([[Double]].self, forKey: .cores)) ?? []
+        compacted = min((try? c.decode(Int.self, forKey: .compacted)) ?? 0, t.count)
     }
 
-    mutating func push(_ s: Sample) {
+    mutating func push(_ s: Sample, at now: Double = Date().timeIntervalSince1970) {
         if cores.count != s.cores.count { self = History(); cores = Array(repeating: [], count: s.cores.count) }
-        t.append(Date().timeIntervalSince1970); cpu.append(s.cpu); mem.append(s.mem * 100); down.append(s.down); up.append(s.up)
+        t.append(now); cpu.append(s.cpu); mem.append(s.mem * 100); down.append(s.down); up.append(s.up)
         temp.append(s.temp); ping.append(s.ping); dev.append(s.dev); devices.append(Double(s.devices.count))
         for i in s.cores.indices { cores[i].append(s.cores[i]) }
-        let cut = t.firstIndex { $0 >= t.last! - maxAge } ?? 0
-        if cut > 500 {   // trim in chunks
-            t.removeFirst(cut)
-            for k in [\History.cpu, \.mem, \.down, \.up, \.temp, \.ping, \.dev, \.devices] { self[keyPath: k].removeFirst(cut) }
-            for i in cores.indices { cores[i].removeFirst(cut) }
+        var lo = compacted, hi = t.count          // first index newer than a day (t is sorted)
+        while lo < hi { let mid = (lo + hi) / 2; if t[mid] < now - rawAge { lo = mid + 1 } else { hi = mid } }
+        let cut = lo
+        if cut - compacted > 500 { compact(upTo: cut) }   // in chunks, so this runs about every 15 minutes
+    }
+
+    /// Average samples [0, end) into 1-minute points (already-compacted points pass through unchanged)
+    /// and drop anything older than `maxAge`.
+    mutating func compact(upTo end: Int) {
+        let newest = t.last ?? 0
+        var nt: [Double] = [], cols: [[Double]] = Array(repeating: [], count: 8 + cores.count)
+        func series(_ i: Int) -> [Double] {
+            switch i { case 0: return cpu; case 1: return mem; case 2: return down; case 3: return up
+                       case 4: return temp; case 5: return ping; case 6: return dev; case 7: return devices
+                       default: return cores[i - 8] }
         }
+        let all = (0..<cols.count).map(series)   // copies; fine at ~15-minute intervals
+        var i = 0
+        while i < end {
+            let minute = floor(t[i] / 60); var j = i
+            while j < end && floor(t[j] / 60) == minute { j += 1 }
+            if t[i] >= newest - maxAge {
+                nt.append(t[i])
+                for c in cols.indices {
+                    let vals = all[c][i..<j].filter { $0 >= 0 }   // -1 means "no reading"
+                    cols[c].append(vals.isEmpty ? -1 : vals.reduce(0, +) / Double(vals.count))
+                }
+            }
+            i = j
+        }
+        compacted = nt.count
+        t = nt + t[end...]
+        cpu = cols[0] + cpu[end...]; mem = cols[1] + mem[end...]; down = cols[2] + down[end...]; up = cols[3] + up[end...]
+        temp = cols[4] + temp[end...]; ping = cols[5] + ping[end...]; dev = cols[6] + dev[end...]; devices = cols[7] + devices[end...]
+        for k in cores.indices { cores[k] = cols[8 + k] + cores[k][end...] }
     }
     static func load() -> History { (try? JSONDecoder().decode(History.self, from: Data(contentsOf: historyURL))) ?? History() }
     func save() { try? JSONEncoder().encode(self).write(to: historyURL, options: .atomic) }
@@ -250,7 +283,7 @@ final class Panel: NSView {
 }
 
 // MARK: hover flyout (history for the hovered section, adjustable range, crosshair tooltip)
-let ranges: [(String, Double)] = [("10 Minutes", 600), ("1 Hour", 3600), ("3 Hours", 10800), ("6 Hours", 21600), ("12 Hours", 43200), ("24 Hours", 86400)]
+let ranges: [(String, Double)] = [("10 Minutes", 600), ("1 Hour", 3600), ("3 Hours", 10800), ("6 Hours", 21600), ("12 Hours", 43200), ("24 Hours", 86400), ("3 Days", 259200), ("7 Days", 604800)]
 func drawOpt(_ vals: [Double?], in g: NSRect, color: NSColor, max m: Double = 100) {
     let w = g.width / CGFloat(vals.count); color.setFill()
     for (i, v) in vals.enumerated() { guard let v else { continue }
@@ -670,6 +703,24 @@ final class App: NSObject, NSApplicationDelegate {
         h.push(s)
         if Date().timeIntervalSince(lastSave) > 60 { h.save(); lastSave = Date() }
     }
+}
+
+if CommandLine.arguments.contains("--selftest-history") {
+    var h = History(); var smp = Sample(); smp.cores = [10, 20]
+    let start = 1_700_000_000.0, step = 2.0, total = Int(9 * 86400 / step)
+    for k in 0..<total { smp.cpu = Double(k % 100); smp.ping = k % 10 == 0 ? -1 : 5; h.push(smp, at: start + Double(k) * step) }
+    let now = start + Double(total - 1) * step
+    let oldest = now - h.t[0], rawStart = h.t[h.compacted]
+    let sorted = zip(h.t, h.t.dropFirst()).allSatisfy { $0 < $1 }
+    let lens = Set([h.t.count, h.cpu.count, h.mem.count, h.ping.count, h.devices.count] + h.cores.map(\.count))
+    let minuteGaps = zip(h.t[..<h.compacted], h.t[1..<max(h.compacted, 1)]).allSatisfy { $1 - $0 >= 59.9 }
+    print(String(format: "points=%d compacted=%d oldest=%.2f days rawFrom=%.2f h ago sorted=%@ sameLengths=%@ minuteSpacing=%@ pingAvg=%.1f",
+                 h.t.count, h.compacted, oldest / 86400, (now - rawStart) / 3600, "\(sorted)", "\(lens.count == 1)", "\(minuteGaps)", h.ping[0]))
+    let b = h.buckets(h.cpu, n: 90, range: 604800, now: now)
+    print("7-day buckets with data:", b.compactMap { $0 }.count, "/ 90")
+    let data = try! JSONEncoder().encode(h); print("json MB:", Double(data.count) / 1e6)
+    let r = try! JSONDecoder().decode(History.self, from: data); print("reload points:", r.t.count, "compacted:", r.compacted)
+    exit(0)
 }
 
 if let i = CommandLine.arguments.firstIndex(of: "--configure") {
